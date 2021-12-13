@@ -120,5 +120,6 @@ func Run(a *actions.Actions) error {
 		}
 	}
 
+	a.Grbl.SendCommands(context.Background(), "G04 P0.001\nM5")
 	return nil
 }
