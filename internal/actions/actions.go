@@ -140,15 +140,9 @@ func (a *Actions) AutoLevel(ctx context.Context) error {
 
 	distx := maxx - minx
 	numx := int(distx / 10)
-	if numx > 4 {
-		numx = 4
-	}
 
 	disty := maxy - miny
 	numy := int(disty / 10)
-	if numy > 4 {
-		numy = 4
-	}
 
 	xgap := distx / (float64(numx) - 1)
 	ygap := disty / (float64(numy) - 1)
@@ -266,16 +260,15 @@ func (a *Actions) Start(ctx context.Context) error {
 		return errors.New("actions: start: no g-code loaded")
 	}
 
-	gc := a.CurrentJob
 	if len(a.Probe) > 0 {
 		g, err := autolevel.AutoLevel(a.CurrentJob, a.Probe, *a.Grbl.GCodeState)
 		if err != nil {
 			return err
 		}
-		gc = g
 
 		log.Print("autolevel enabled")
+		return a.Grbl.SendJob(ctx, g)
 	}
 
-	return a.Grbl.SendJob(ctx, gc)
+	return a.Grbl.SendJob(ctx, a.CurrentJob)
 }
