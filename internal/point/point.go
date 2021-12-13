@@ -143,7 +143,7 @@ func (p *Point) ThreeClosest(points []*Point) []*Point {
 }
 
 func (p *Point) InterpolateZ(points []*Point) (*Point, error) {
-	pts := p.ThreeClosest(points)
+	pts := p.ThreeClosest(append([]*Point{}, points...))
 	if len(pts) != 3 {
 		return nil, errors.New("point: failed to find 3 closest points")
 	}
