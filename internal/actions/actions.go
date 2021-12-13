@@ -268,7 +268,7 @@ func (a *Actions) Start(ctx context.Context) error {
 
 	gc := a.CurrentJob
 	if len(a.Probe) > 0 {
-		g, err := autolevel.AutoLevel(a.CurrentJob, a.Probe)
+		g, err := autolevel.AutoLevel(a.CurrentJob, a.Probe, *a.Grbl.GCodeState)
 		if err != nil {
 			return err
 		}

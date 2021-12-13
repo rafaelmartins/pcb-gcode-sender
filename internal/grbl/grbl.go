@@ -83,6 +83,11 @@ func NewGrbl(device string) (*Grbl, error) {
 		}
 	}
 
+	// populate gcode states
+	if err := rv.SendCommands(context.Background(), "$G"); err != nil {
+		return nil, err
+	}
+
 	return rv, nil
 }
 

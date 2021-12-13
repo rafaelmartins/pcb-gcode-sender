@@ -43,3 +43,10 @@ func (g *GCodeStates) ProcessLine(l gcode.Line) {
 		g.set(field.String())
 	}
 }
+
+func (g *GCodeStates) ToMM(v float64) float64 {
+	if g.Units == "G20" {
+		return v / 25.4
+	}
+	return v
+}
