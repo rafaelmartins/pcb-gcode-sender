@@ -5,10 +5,11 @@ import (
 
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/gcode"
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/grbl"
+	"github.com/rafaelmartins/pcb-gcode-sender/internal/interp2d"
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/point"
 )
 
-func AutoLevel(gc gcode.Job, probe []*point.Point, gcs grbl.GCodeStates) (gcode.Job, error) {
+func AutoLevel(gc gcode.Job, spline *interp2d.Spline, gcs grbl.GCodeStates) (gcode.Job, error) {
 	rv := []gcode.Line{}
 
 	var (
@@ -45,11 +46,19 @@ func AutoLevel(gc gcode.Job, probe []*point.Point, gcs grbl.GCodeStates) (gcode.
 		}
 
 		if foundX && foundY && foundZ {
-			np, err := state.InterpolateZ(probe)
-			if err != nil {
-				return nil, err
+			z := state.Z
+			if spline != nil {
+				dz, err := spline.At(state.X, state.Y)
+				if err != nil {
+					return nil, err
+				}
+				z += dz
 			}
-			l.SetPosition(np)
+			l.SetPosition(&point.Point{
+				X: state.X,
+				Y: state.Y,
+				Z: z,
+			})
 		}
 
 		gcs.ProcessLine(l)

@@ -11,6 +11,7 @@ import (
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/autolevel"
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/gcode"
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/grbl"
+	"github.com/rafaelmartins/pcb-gcode-sender/internal/interp2d"
 	"github.com/rafaelmartins/pcb-gcode-sender/internal/point"
 )
 
@@ -22,7 +23,8 @@ type Actions struct {
 	Grbl           *grbl.Grbl
 	CurrentJob     gcode.Job
 	CurrentJobFile string
-	Probe          []*point.Point
+	Probe          [][]*point.Point
+	ProbeSpline    *interp2d.Spline
 }
 
 func (a *Actions) Home(ctx context.Context) error {
@@ -124,6 +126,47 @@ func (a *Actions) LoadGCode(ctx context.Context, file string) error {
 	return nil
 }
 
+func (a *Actions) autoLevelProbe(ctx context.Context, x float64, y float64) error {
+	if err := a.Grbl.SendGCodeInline(ctx, fmt.Sprintf(`
+G90
+G01 Z2 F10000
+G01 X%.3f Y%.3f
+G91
+G38.2 Z-100 F50
+G01 Z1 F100
+G38.2 Z-2 F10
+G90
+G01 Z2 F100
+G04 P0.001`, x, y)); err != nil {
+		return err
+	}
+
+	if a.Grbl.LastProbe == nil || a.Grbl.MPos == nil {
+		return errors.New("actions: autolevel: probe failed")
+	}
+
+	return nil
+}
+
+func (a *Actions) autoLevelLoadProbe(pts [][]*point.Point, wco *point.Point) error {
+	a.Probe = make([][]*point.Point, len(pts))
+	for j, lp := range pts {
+		a.Probe[j] = make([]*point.Point, len(lp))
+		for i, p := range lp {
+			a.Probe[j][i] = p.Sub(wco)
+		}
+	}
+
+	sp, err := interp2d.NewSpline(a.Probe)
+	if err != nil {
+		return err
+	}
+	a.ProbeSpline.Close()
+	a.ProbeSpline = sp
+
+	return nil
+}
+
 func (a *Actions) AutoLevel(ctx context.Context) error {
 	if a == nil || a.Grbl == nil {
 		return ErrGrblNotSet
@@ -137,6 +180,10 @@ func (a *Actions) AutoLevel(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	minx -= 0.2
+	miny -= 0.2
+	maxx += 0.2
+	maxy += 0.2
 
 	distx := maxx - minx
 	numx := int(distx / 10)
@@ -147,60 +194,49 @@ func (a *Actions) AutoLevel(ctx context.Context) error {
 	xgap := distx / (float64(numx) - 1)
 	ygap := disty / (float64(numy) - 1)
 
-	pp := [][]float64{}
+	fmt.Println(numx, numy, maxx, maxy)
 
+	pts := make([][]*point.Point, numy)
 	y := miny
+
 	for j := 0; j < numy; j++ {
+		pts[j] = make([]*point.Point, numx)
+
 		if j%2 == 0 {
 			x := minx
 			for i := 0; i < numx; i++ {
-				pp = append(pp, []float64{x, y})
+				select {
+				case <-ctx.Done():
+					return nil
+				default:
+				}
+
+				if err := a.autoLevelProbe(ctx, x, y); err != nil {
+					return err
+				}
+				pts[j][i] = a.Grbl.LastProbe
+
 				x += xgap
 			}
 		} else {
 			x := maxx
 			for i := numx - 1; i >= 0; i-- {
-				pp = append(pp, []float64{x, y})
+				select {
+				case <-ctx.Done():
+					return nil
+				default:
+				}
+
+				if err := a.autoLevelProbe(ctx, x, y); err != nil {
+					return err
+				}
+				pts[j][i] = a.Grbl.LastProbe
+
 				x -= xgap
 			}
 		}
+
 		y += ygap
-	}
-
-	fmt.Println(numx, numy, maxx, maxy)
-
-	rv := []*point.Point{}
-	for _, p := range pp {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-
-		if err := a.Grbl.SendGCodeInline(ctx, fmt.Sprintf(`
-G90
-G01 Z2 F10000
-G01 X%.3f Y%.3f
-G91
-G38.2 Z-100 F50
-G01 Z1 F100
-G38.2 Z-2 F10
-G90
-G01 Z2 F100
-G04 P0.001`, p[0], p[1])); err != nil {
-			return err
-		}
-
-		if a.Grbl.LastProbe == nil || a.Grbl.MPos == nil {
-			return errors.New("actions: autolevel: probe failed")
-		}
-
-		rv = append(rv, a.Grbl.LastProbe)
-	}
-
-	a.Probe = []*point.Point{}
-	for _, pt := range rv {
-		a.Probe = append(a.Probe, pt.Sub(a.Grbl.WCO))
 	}
 
 	fp, err := os.OpenFile(a.CurrentJobFile+".json", os.O_RDWR|os.O_CREATE, 0755)
@@ -209,10 +245,14 @@ G04 P0.001`, p[0], p[1])); err != nil {
 	}
 	defer fp.Close()
 
-	return json.NewEncoder(fp).Encode(map[string]interface{}{
+	if err := json.NewEncoder(fp).Encode(map[string]interface{}{
 		"wco":    a.Grbl.WCO,
-		"points": rv,
-	})
+		"points": pts,
+	}); err != nil {
+		return err
+	}
+
+	return a.autoLevelLoadProbe(pts, a.Grbl.WCO)
 }
 
 func (a *Actions) AutoLevelLoad(ctx context.Context) error {
@@ -231,8 +271,8 @@ func (a *Actions) AutoLevelLoad(ctx context.Context) error {
 	defer fp.Close()
 
 	data := struct {
-		WCO    *point.Point   `json:"wco"`
-		Points []*point.Point `json:"points"`
+		WCO    *point.Point     `json:"wco"`
+		Points [][]*point.Point `json:"points"`
 	}{}
 
 	if err := json.NewDecoder(fp).Decode(&data); err != nil {
@@ -243,12 +283,7 @@ func (a *Actions) AutoLevelLoad(ctx context.Context) error {
 		return errors.New("actions: autolevel-load: stored WCO differs from current WCO")
 	}
 
-	a.Probe = []*point.Point{}
-	for _, pt := range data.Points {
-		a.Probe = append(a.Probe, pt.Sub(a.Grbl.WCO))
-	}
-
-	return nil
+	return a.autoLevelLoadProbe(data.Points, data.WCO)
 }
 
 func (a *Actions) Start(ctx context.Context) error {
@@ -261,7 +296,7 @@ func (a *Actions) Start(ctx context.Context) error {
 	}
 
 	if len(a.Probe) > 0 {
-		g, err := autolevel.AutoLevel(a.CurrentJob, a.Probe, *a.Grbl.GCodeState)
+		g, err := autolevel.AutoLevel(a.CurrentJob, a.ProbeSpline, *a.Grbl.GCodeState)
 		if err != nil {
 			return err
 		}
